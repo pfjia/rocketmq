@@ -207,7 +207,7 @@ public class DefaultMessageStore implements MessageStore {
     /**
      * @throws Exception
      */
-    public void start() throws Exception {
+    @Override public void start() throws Exception {
 
         lock = lockFile.getChannel().tryLock(0, 1, false);
         if (lock == null || lock.isShared() || !lock.isValid()) {
@@ -420,7 +420,7 @@ public class DefaultMessageStore implements MessageStore {
         long diff = this.systemClock.now() - begin;
 
         return diff < 10000000
-                && diff > this.messageStoreConfig.getOsPageCacheBusyTimeOutMills();
+            && diff > this.messageStoreConfig.getOsPageCacheBusyTimeOutMills();
     }
 
     @Override
@@ -1703,6 +1703,9 @@ public class DefaultMessageStore implements MessageStore {
         }
     }
 
+    /**
+     * ConsumeQueue和IndexFile什么时候建立的呢？ – 在Broker启动的时候，会启动一个ReputMessageService线程服务:
+     */
     class ReputMessageService extends ServiceThread {
 
         private volatile long reputFromOffset = 0;

@@ -123,6 +123,19 @@ public class RouteInfoManager {
         return topicList.encode();
     }
 
+    /**
+     * 注册broker
+     *
+     * @param clusterName 集群名
+     * @param brokerAddr broker地址
+     * @param brokerName broker名
+     * @param brokerId brokerId
+     * @param haServerAddr
+     * @param topicConfigWrapper
+     * @param filterServerList
+     * @param channel
+     * @return
+     */
     public RegisterBrokerResult registerBroker(
         final String clusterName,
         final String brokerAddr,
@@ -392,9 +405,7 @@ public class RouteInfoManager {
                     topicRouteData.setQueueDatas(queueDataList);
                     foundQueueData = true;
 
-                    Iterator<QueueData> it = queueDataList.iterator();
-                    while (it.hasNext()) {
-                        QueueData qd = it.next();
+                    for (QueueData qd : queueDataList) {
                         brokerNameSet.add(qd.getBrokerName());
                     }
 

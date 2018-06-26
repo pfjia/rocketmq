@@ -25,6 +25,9 @@ public class RequestTask implements Runnable {
     private final long createTimestamp = System.currentTimeMillis();
     private final Channel channel;
     private final RemotingCommand request;
+    /**
+     * 是否停止运行
+     */
     private boolean stopRun = false;
 
     public RequestTask(final Runnable runnable, final Channel channel, final RemotingCommand request) {
@@ -76,8 +79,9 @@ public class RequestTask implements Runnable {
 
     @Override
     public void run() {
-        if (!this.stopRun)
+        if (!this.stopRun) {
             this.runnable.run();
+        }
     }
 
     public void returnResponse(int code, String remark) {

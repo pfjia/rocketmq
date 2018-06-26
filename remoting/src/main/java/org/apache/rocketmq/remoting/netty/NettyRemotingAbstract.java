@@ -221,10 +221,13 @@ public abstract class NettyRemotingAbstract {
                 }
             };
 
+            //若拒绝处理该请求
             if (pair.getObject1().rejectRequest()) {
+                //构造response
                 final RemotingCommand response = RemotingCommand.createResponseCommand(RemotingSysResponseCode.SYSTEM_BUSY,
                     "[REJECTREQUEST]system busy, start flow control for a while");
                 response.setOpaque(opaque);
+                //发送响应并返回
                 ctx.writeAndFlush(response);
                 return;
             }

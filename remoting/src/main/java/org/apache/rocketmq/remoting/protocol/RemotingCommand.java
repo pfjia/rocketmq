@@ -49,9 +49,19 @@ public class RemotingCommand {
     private static final int RPC_ONEWAY = 1; // 0, RPC
     private static final Map<Class<? extends CommandCustomHeader>, Field[]> CLASS_HASH_MAP =
         new HashMap<Class<? extends CommandCustomHeader>, Field[]>();
+    /**
+     * 缓存的class的规范名
+     * key:class
+     * value:class的CanonicalName
+     */
     private static final Map<Class, String> CANONICAL_NAME_CACHE = new HashMap<Class, String>();
     // 1, Oneway
     // 1, RESPONSE_COMMAND
+    /**
+     * 缓存{@link CommandCustomHeader}的Field是否可为null
+     * key:{@link CommandCustomHeader}的子类Field
+     * value:是否可为null
+     */
     private static final Map<Field, Boolean> NULLABLE_FIELD_CACHE = new HashMap<Field, Boolean>();
     private static final String STRING_CANONICAL_NAME = String.class.getCanonicalName();
     private static final String DOUBLE_CANONICAL_NAME_1 = Double.class.getCanonicalName();
@@ -283,6 +293,11 @@ public class RemotingCommand {
         this.customHeader = customHeader;
     }
 
+    /**
+     * @param classHeader class
+     * @return 从this中解码出CommandCustomerHeader
+     * @throws RemotingCommandException
+     */
     public CommandCustomHeader decodeCommandCustomHeader(
         Class<? extends CommandCustomHeader> classHeader) throws RemotingCommandException {
         CommandCustomHeader objectHeader;
@@ -343,6 +358,12 @@ public class RemotingCommand {
         return objectHeader;
     }
 
+    /**
+     * 获取classHeader声明的field,添加缓存功能
+     *
+     * @param classHeader class
+     * @return classHeader声明的field
+     */
     private Field[] getClazzFields(Class<? extends CommandCustomHeader> classHeader) {
         Field[] field = CLASS_HASH_MAP.get(classHeader);
 

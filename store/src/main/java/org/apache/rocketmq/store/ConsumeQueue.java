@@ -24,6 +24,14 @@ import org.apache.rocketmq.store.config.StorePathConfigHelper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * 消息的位置文件，主要存储消息在CommitLog的位置(offset)，多个文件构成一个队列。内部采用MappedFileQueue实现了消息位置文件队列功能
+ *
+ * Consumer消费消息的时候，要读2次：
+ *
+ * 先读ConsumeQueue得到offset
+ * 再根据offset从读CommitLog得到消息。
+ */
 public class ConsumeQueue {
     private static final Logger log = LoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
 

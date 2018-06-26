@@ -27,6 +27,11 @@ import org.apache.rocketmq.store.MappedFile;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * 索引文件存储的消息的索引 - 方便根据topic+消息的key快速查询消息。
+ *
+ * 索引可以理解为一个类似hashtable的结构。建立索引时候根据每条消息的topic + "#" + key的hash值取模计算出实际文件位置absSlotPos，将消息在CommitLog的位移位置存储到slotPos对应的slot里面
+ */
 public class IndexFile {
     private static final Logger log = LoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
     private static int hashSlotSize = 4;

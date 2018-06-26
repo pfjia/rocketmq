@@ -35,6 +35,10 @@ public class KVConfigManager {
     private final NamesrvController namesrvController;
 
     private final ReadWriteLock lock = new ReentrantReadWriteLock();
+    /**
+     * key:namespace
+     * value:该namespace下的属性
+     */
     private final HashMap<String/* Namespace */, HashMap<String/* Key */, String/* Value */>> configTable =
         new HashMap<String, HashMap<String, String>>();
 
@@ -88,6 +92,9 @@ public class KVConfigManager {
         this.persist();
     }
 
+    /**
+     * 将kvConfig持久化
+     */
     public void persist() {
         try {
             this.lock.readLock().lockInterruptibly();
