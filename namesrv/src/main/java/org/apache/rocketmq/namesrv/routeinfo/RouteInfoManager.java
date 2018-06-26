@@ -49,10 +49,34 @@ public class RouteInfoManager {
     private static final Logger log = LoggerFactory.getLogger(LoggerName.NAMESRV_LOGGER_NAME);
     private final static long BROKER_CHANNEL_EXPIRED_TIME = 1000 * 60 * 2;
     private final ReadWriteLock lock = new ReentrantReadWriteLock();
+    /**
+     * 主题信息,为Producer提供服务
+     * topic与topic配置的对应关系
+     */
     private final HashMap<String/* topic */, List<QueueData>> topicQueueTable;
+    /**
+     * broker信息
+     * key:broker名
+     * value:broker属性
+     */
     private final HashMap<String/* brokerName */, BrokerData> brokerAddrTable;
+    /**
+     * 集群主备信息表
+     * key:集群名
+     * value:broker集合
+     */
     private final HashMap<String/* clusterName */, Set<String/* brokerName */>> clusterAddrTable;
+    /**
+     * 活跃的broker信息
+     * key:
+     * value:broker信息集合
+     */
     private final HashMap<String/* brokerAddr */, BrokerLiveInfo> brokerLiveTable;
+    /**
+     * 过滤器信息
+     * key:broker地址
+     * value:过滤器
+     */
     private final HashMap<String/* brokerAddr */, List<String>/* Filter Server */> filterServerTable;
 
     public RouteInfoManager() {
@@ -406,6 +430,9 @@ public class RouteInfoManager {
         return null;
     }
 
+    /**
+     * 扫描非活跃broker,10s执行一次,两分钟内都没收到一个broker的心跳数据，则直接将其从brokerLiveTable中移除
+     */
     public void scanNotActiveBroker() {
         Iterator<Entry<String, BrokerLiveInfo>> it = this.brokerLiveTable.entrySet().iterator();
         while (it.hasNext()) {
@@ -420,16 +447,19 @@ public class RouteInfoManager {
         }
     }
 
+    /**
+     * 移除不活跃的broker
+     *
+     * @param remoteAddr broker地址
+     * @param channel 网络连接
+     */
     public void onChannelDestroy(String remoteAddr, Channel channel) {
         String brokerAddrFound = null;
         if (channel != null) {
             try {
                 try {
                     this.lock.readLock().lockInterruptibly();
-                    Iterator<Entry<String, BrokerLiveInfo>> itBrokerLiveTable =
-                        this.brokerLiveTable.entrySet().iterator();
-                    while (itBrokerLiveTable.hasNext()) {
-                        Entry<String, BrokerLiveInfo> entry = itBrokerLiveTable.next();
+                    for (Entry<String, BrokerLiveInfo> entry : this.brokerLiveTable.entrySet()) {
                         if (entry.getValue().getChannel() == channel) {
                             brokerAddrFound = entry.getKey();
                             break;
@@ -733,6 +763,9 @@ public class RouteInfoManager {
 }
 
 class BrokerLiveInfo {
+    /**
+     * 上次更新的心跳时间
+     */
     private long lastUpdateTimestamp;
     private DataVersion dataVersion;
     private Channel channel;

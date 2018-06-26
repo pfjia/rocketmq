@@ -31,6 +31,15 @@ import org.apache.rocketmq.remoting.exception.RemotingCommandException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * 网络通信的实体类,统一了request和response
+ *
+ * 协议格式:
+ * 消息长度:4个字节:不包括消息长度的4个字节在内
+ * 序列号类型&头部长度:4个字节
+ * 消息头数据:头部长度中描述的长度
+ * 消息主题数据:消息长度-消息头长度-4
+ */
 public class RemotingCommand {
     public static final String SERIALIZE_TYPE_PROPERTY = "rocketmq.serialize.type";
     public static final String SERIALIZE_TYPE_ENV = "ROCKETMQ_SERIALIZE_TYPE";
@@ -69,17 +78,48 @@ public class RemotingCommand {
         }
     }
 
+    /**
+     * RequestCode定义:
+     * 当表示请求操作代码时候，请求接收方根据代码执行相应操作；
+     * 当表示应答结果代码时候，0表示成功，非0表示错误代码。
+     */
     private int code;
+    /**
+     * 请求和响应方语言
+     */
     private LanguageCode language = LanguageCode.JAVA;
+    /**
+     * 请求和响应方程序版本
+     */
     private int version = 0;
+    /**
+     * 请求发起方做tcp连接上的线程复用,唯一标识客户端发送的请求
+     */
     private int opaque = requestId.getAndIncrement();
+    /**
+     * 通信层方式标志位,如sync,async,oneway
+     */
     private int flag = 0;
     private String remark;
+    /**
+     * 请求自定义字段
+     * 把下面customHeader中的信息填充到这里，见 makeCustomHeaderToNet
+     * "extFields":{"topic":"yyztest2","queueId":"3","consumerGroup":"yyzGroup2","commitOffset":"28"}
+     */
     private HashMap<String, String> extFields;
+    /**
+     * header data
+     * 例如CONSUMER_SEND_MSG_BACK消息，
+     * customHeader 为ConsumerSendMsgBackRequestHeader  填充见 MQClientAPIImpl.consumerSendMessageBack
+     */
     private transient CommandCustomHeader customHeader;
-
+    /**
+     * 序列化方式
+     */
     private SerializeType serializeTypeCurrentRPC = serializeTypeConfigInThisServer;
-
+    /**
+     * body部分
+     */
     private transient byte[] body;
 
     protected RemotingCommand() {
@@ -141,6 +181,10 @@ public class RemotingCommand {
         return decode(byteBuffer);
     }
 
+    /**
+     * @param byteBuffer 不包括"消息长度"在内的数据
+     * @return 解码结果
+     */
     public static RemotingCommand decode(final ByteBuffer byteBuffer) {
         int length = byteBuffer.limit();
         int oriHeaderLen = byteBuffer.getInt();
@@ -208,6 +252,14 @@ public class RemotingCommand {
         return true;
     }
 
+    /**
+     * 设source4个字节分别为1,2,3,4,则糅合后的4个字节为:
+     * type,2,3,4
+     *
+     * @param source 头部长度
+     * @param type 序列化类型
+     * @return 将头部长度和序列号类型糅合在一个字段中
+     */
     public static byte[] markProtocolType(int source, SerializeType type) {
         byte[] result = new byte[4];
 
@@ -325,6 +377,9 @@ public class RemotingCommand {
         return name;
     }
 
+    /**
+     * @return 编码结果
+     */
     public ByteBuffer encode() {
         // 1> header length size
         int length = 4;

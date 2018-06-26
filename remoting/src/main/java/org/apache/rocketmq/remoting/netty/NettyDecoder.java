@@ -19,6 +19,7 @@ package org.apache.rocketmq.remoting.netty;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
+import io.netty.handler.codec.TooLongFrameException;
 import java.nio.ByteBuffer;
 import org.apache.rocketmq.remoting.common.RemotingHelper;
 import org.apache.rocketmq.remoting.common.RemotingUtil;
@@ -32,6 +33,14 @@ public class NettyDecoder extends LengthFieldBasedFrameDecoder {
     private static final int FRAME_MAX_LENGTH =
         Integer.parseInt(System.getProperty("com.rocketmq.remoting.frameMaxLength", "16777216"));
 
+    /**
+     * 说明下LengthFieldBasedFrameDecoder初始化的各个字段含义:
+     * maxFrameLength:报文最大长度,如果一个报文长度超过该值,抛出{@link TooLongFrameException}
+     * lengthFieldOffset:报文长度字段在报文中的偏移量,由于报文长度字段在协议的第一个字段,此值为0
+     * lengthFieldLength:报文长度字段的长度,报文长度字段占4个字节
+     * lengthAdjustment:
+     * initialBytesToStrip:报文长度字段的4个字节无需解析
+     */
     public NettyDecoder() {
         super(FRAME_MAX_LENGTH, 0, 4, 0, 4);
     }

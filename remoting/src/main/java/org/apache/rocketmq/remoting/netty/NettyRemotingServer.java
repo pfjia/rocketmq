@@ -87,6 +87,10 @@ public class NettyRemotingServer extends NettyRemotingAbstract implements Remoti
         this(nettyServerConfig, null);
     }
 
+    /**
+     * @param nettyServerConfig 配置
+     * @param channelEventListener 监听器
+     */
     public NettyRemotingServer(final NettyServerConfig nettyServerConfig,
         final ChannelEventListener channelEventListener) {
         super(nettyServerConfig.getServerOnewaySemaphoreValue(), nettyServerConfig.getServerAsyncSemaphoreValue());
@@ -162,6 +166,7 @@ public class NettyRemotingServer extends NettyRemotingAbstract implements Remoti
 
     @Override
     public void start() {
+        //1.启动netty服务器
         this.defaultEventExecutorGroup = new DefaultEventExecutorGroup(
             nettyServerConfig.getServerWorkerThreads(),
             new ThreadFactory() {
@@ -191,9 +196,13 @@ public class NettyRemotingServer extends NettyRemotingAbstract implements Remoti
                             .addLast(defaultEventExecutorGroup, HANDSHAKE_HANDLER_NAME,
                                 new HandshakeHandler(TlsSystemConfig.tlsMode))
                             .addLast(defaultEventExecutorGroup,
+                                //编码
                                 new NettyEncoder(),
+                                //解码
                                 new NettyDecoder(),
+                                //心跳管理
                                 new IdleStateHandler(0, 0, nettyServerConfig.getServerChannelMaxIdleTimeSeconds()),
+                                //连接管理handler,处理connect, disconnect, close等事件
                                 new NettyConnectManageHandler(),
                                 new NettyServerHandler()
                             );
@@ -212,10 +221,12 @@ public class NettyRemotingServer extends NettyRemotingAbstract implements Remoti
             throw new RuntimeException("this.serverBootstrap.bind().sync() InterruptedException", e1);
         }
 
+        //2.启动nettyEventExecutor
         if (this.channelEventListener != null) {
             this.nettyEventExecutor.start();
         }
 
+        //3.启动定时任务
         this.timer.scheduleAtFixedRate(new TimerTask() {
 
             @Override
@@ -394,6 +405,10 @@ public class NettyRemotingServer extends NettyRemotingAbstract implements Remoti
         }
     }
 
+    /**
+     * 将连接的close,connect等事件封装为{@link NettyEvent}添加到{@link NettyEventExecutor#eventQueue}中,
+     * 由{@link NettyEventExecutor}异步处理
+     */
     class NettyConnectManageHandler extends ChannelDuplexHandler {
         @Override
         public void channelRegistered(ChannelHandlerContext ctx) throws Exception {

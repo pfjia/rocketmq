@@ -32,6 +32,9 @@ public class ResponseFuture {
 
     private final SemaphoreReleaseOnlyOnce once;
 
+    /**
+     * 确保即使{@link #executeInvokeCallback()}被调用多次,{@link #invokeCallback}最多执行一次
+     */
     private final AtomicBoolean executeCallbackOnlyOnce = new AtomicBoolean(false);
     private volatile RemotingCommand responseCommand;
     private volatile boolean sendRequestOK = true;

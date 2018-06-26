@@ -18,6 +18,9 @@ package org.apache.rocketmq.remoting;
 
 import io.netty.channel.Channel;
 
+/**
+ * 监听与 Broker 建立的连接的状态（空闲、关闭、异常三个状态），并调用 BrokerHousekeepingService的相应 onChannel****方法。其中渠道的空闲、关闭、异常状态均调用RouteInfoManager.onChannelDestory 方法处理。
+ */
 public interface ChannelEventListener {
     void onChannelConnect(final String remoteAddr, final Channel channel);
 

@@ -20,6 +20,9 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class SemaphoreReleaseOnlyOnce {
+    /**
+     * 是否已经释放了semaphore
+     */
     private final AtomicBoolean released = new AtomicBoolean(false);
     private final Semaphore semaphore;
 
@@ -27,6 +30,9 @@ public class SemaphoreReleaseOnlyOnce {
         this.semaphore = semaphore;
     }
 
+    /**
+     * 释放semaphore,由于使用了原子类属性released,因此,即使多次调用该方法,最多释放semaphore一次
+     */
     public void release() {
         if (this.semaphore != null) {
             if (this.released.compareAndSet(false, true)) {

@@ -35,6 +35,11 @@ import org.apache.rocketmq.remoting.netty.NettyServerConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * 创建NettyServer,注册requestProcessor
+ * 启动NettyServer
+ * 启动各种scheduled task
+ */
 public class NamesrvController {
     private static final Logger log = LoggerFactory.getLogger(LoggerName.NAMESRV_LOGGER_NAME);
 
@@ -42,15 +47,27 @@ public class NamesrvController {
 
     private final NettyServerConfig nettyServerConfig;
 
+    /**
+     * 按一定的频率做两个事情，扫描不活跃的broker；打印所有KV配置信息
+     */
     private final ScheduledExecutorService scheduledExecutorService = Executors.newSingleThreadScheduledExecutor(new ThreadFactoryImpl(
         "NSScheduledThread"));
+    /**
+     * 维护了一些KV方式的配置数据，可以根据请求，执行添加、删除、查询等操作
+     */
     private final KVConfigManager kvConfigManager;
+    /**
+     * 维护了topic/broker/cluster/filter这些东西的路由信息，同样支持增删改查的操作
+     */
     private final RouteInfoManager routeInfoManager;
 
     private RemotingServer remotingServer;
 
     private BrokerHousekeepingService brokerHousekeepingService;
 
+    /**
+     * processor线程池,nettyServer 接收到请求后,封装成任务提交到该线程池.
+     */
     private ExecutorService remotingExecutor;
 
     private Configuration configuration;
@@ -68,6 +85,13 @@ public class NamesrvController {
         this.configuration.setStorePathFromConfig(this.namesrvConfig, "configStorePath");
     }
 
+    /**
+     * 1.加载kvConfig配置数据
+     * 2.初始化通信层
+     * 3.注册消息请求处理器
+     *
+     * @return 是否初始化成功
+     */
     public boolean initialize() {
 
         this.kvConfigManager.load();
@@ -81,6 +105,9 @@ public class NamesrvController {
 
         this.scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
 
+            /**
+             * 扫描不活跃的broker
+             */
             @Override
             public void run() {
                 NamesrvController.this.routeInfoManager.scanNotActiveBroker();
@@ -89,6 +116,9 @@ public class NamesrvController {
 
         this.scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
 
+            /**
+             * 打印所有KV配置信息
+             */
             @Override
             public void run() {
                 NamesrvController.this.kvConfigManager.printAllPeriodically();

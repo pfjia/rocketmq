@@ -38,6 +38,19 @@ import org.apache.rocketmq.srvutil.ShutdownHookThread;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * 思考:
+ * 1.为什么不使用Zookeeper实现服务发现?
+ * (1)不需要Zookeeper的leader选举
+ * (2)Zookeeper存储的数据结构较为简单
+ * (3)namesrv更加轻量级
+ * 个人觉得如果使用Zookeeper则不需要broker和每个namesrv都建立连接.
+ *
+ * 功能:
+ * 1.负责解析命令行的一些参数到各种config对象中(NamesrvConfig,NettyServerConfig等)
+ * 2.初始化NamesrvController
+ * 3.配置shutdownHook,启动NamesrvController
+ */
 public class NamesrvStartup {
     public static Properties properties = null;
     public static CommandLine commandLine = null;
@@ -61,6 +74,7 @@ public class NamesrvStartup {
             final NamesrvConfig namesrvConfig = new NamesrvConfig();
             final NettyServerConfig nettyServerConfig = new NettyServerConfig();
             nettyServerConfig.setListenPort(9876);
+            //从配置文件中读取配置
             if (commandLine.hasOption('c')) {
                 String file = commandLine.getOptionValue('c');
                 if (file != null) {
@@ -77,12 +91,14 @@ public class NamesrvStartup {
                 }
             }
 
+            // 打印当前配置文件
             if (commandLine.hasOption('p')) {
                 MixAll.printObjectProperties(null, namesrvConfig);
                 MixAll.printObjectProperties(null, nettyServerConfig);
                 System.exit(0);
             }
 
+            //解析通过命令行配置的配置
             MixAll.properties2Object(ServerUtil.commandLine2Properties(commandLine), namesrvConfig);
 
             if (null == namesrvConfig.getRocketmqHome()) {
@@ -90,6 +106,7 @@ public class NamesrvStartup {
                 System.exit(-2);
             }
 
+            //配置日志
             LoggerContext lc = (LoggerContext) LoggerFactory.getILoggerFactory();
             JoranConfigurator configurator = new JoranConfigurator();
             configurator.setContext(lc);
@@ -100,11 +117,12 @@ public class NamesrvStartup {
             MixAll.printObjectProperties(log, namesrvConfig);
             MixAll.printObjectProperties(log, nettyServerConfig);
 
+            //创建NamesrvController
             final NamesrvController controller = new NamesrvController(namesrvConfig, nettyServerConfig);
 
             // remember all configs to prevent discard
             controller.getConfiguration().registerConfig(properties);
-
+            //初始化namesrvController
             boolean initResult = controller.initialize();
             if (!initResult) {
                 controller.shutdown();
@@ -134,6 +152,12 @@ public class NamesrvStartup {
         return null;
     }
 
+    /**
+     * 为options添加 -c -p的选项
+     *
+     * @param options 存放option
+     * @return options
+     */
     public static Options buildCommandlineOptions(final Options options) {
         Option opt = new Option("c", "configFile", true, "Name server config properties file");
         opt.setRequired(false);

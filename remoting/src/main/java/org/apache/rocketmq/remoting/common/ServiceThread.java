@@ -20,6 +20,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
+ * 后台线程的基类
+ *
  * Base class for background thread
  */
 public abstract class ServiceThread implements Runnable {

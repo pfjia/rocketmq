@@ -39,6 +39,7 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 public class RemotingServerTest {
@@ -47,7 +48,9 @@ public class RemotingServerTest {
 
     public static RemotingServer createRemotingServer() throws InterruptedException {
         NettyServerConfig config = new NettyServerConfig();
+        //初始化RemotingServer, 此处的逻辑与RemotingClient大体相当
         RemotingServer remotingServer = new NettyRemotingServer(config);
+        //注册一个处理器,根据requestCode, 获取处理器,处理请求
         remotingServer.registerProcessor(0, new NettyRequestProcessor() {
             @Override
             public RemotingCommand processRequest(ChannelHandlerContext ctx, RemotingCommand request) {
@@ -91,12 +94,15 @@ public class RemotingServerTest {
     @Test
     public void testInvokeSync() throws InterruptedException, RemotingConnectException,
         RemotingSendRequestException, RemotingTimeoutException {
+        //消息头
         RequestHeader requestHeader = new RequestHeader();
         requestHeader.setCount(1);
         requestHeader.setMessageTitle("Welcome");
+        //构建请求
         RemotingCommand request = RemotingCommand.createRequestCommand(0, requestHeader);
+        //发送同步消息
         RemotingCommand response = remotingClient.invokeSync("localhost:8888", request, 1000 * 3);
-        assertTrue(response != null);
+        assertNotNull(response);
         assertThat(response.getLanguage()).isEqualTo(LanguageCode.JAVA);
         assertThat(response.getExtFields()).hasSize(2);
 
@@ -122,7 +128,7 @@ public class RemotingServerTest {
             @Override
             public void operationComplete(ResponseFuture responseFuture) {
                 latch.countDown();
-                assertTrue(responseFuture != null);
+                assertNotNull(responseFuture);
                 assertThat(responseFuture.getResponseCommand().getLanguage()).isEqualTo(LanguageCode.JAVA);
                 assertThat(responseFuture.getResponseCommand().getExtFields()).hasSize(2);
             }
