@@ -21,6 +21,9 @@ import org.apache.rocketmq.common.constant.LoggerName;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * Broker初始化加载本地配置，配置信息是以json格式存储在本地， rocketmq强依赖fastjson作转换， RocketMq通过ConfigMananger来管理配置加载以及持久化
+ */
 public abstract class ConfigManager {
     private static final Logger log = LoggerFactory.getLogger(LoggerName.COMMON_LOGGER_NAME);
 
@@ -45,6 +48,9 @@ public abstract class ConfigManager {
         }
     }
 
+    /**
+     * @return 配置文件路径
+     */
     public abstract String configFilePath();
 
     private boolean loadBak() {

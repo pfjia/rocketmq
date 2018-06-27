@@ -158,7 +158,7 @@ public class SubscriptionGroupManager extends ConfigManager {
         }
     }
 
-    public String encode(final boolean prettyFormat) {
+    @Override public String encode(final boolean prettyFormat) {
         return RemotingSerializable.toJson(this, prettyFormat);
     }
 

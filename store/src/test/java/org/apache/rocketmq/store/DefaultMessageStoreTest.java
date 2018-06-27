@@ -24,13 +24,12 @@ import java.net.SocketAddress;
 import java.nio.channels.OverlappingFileLockException;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
-
 import org.apache.rocketmq.common.BrokerConfig;
 import org.apache.rocketmq.common.UtilAll;
 import org.apache.rocketmq.store.config.FlushDiskType;
 import org.apache.rocketmq.store.config.MessageStoreConfig;
-import org.junit.After;
 import org.apache.rocketmq.store.stats.BrokerStatsManager;
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -52,8 +51,10 @@ public class DefaultMessageStoreTest {
         BornHost = new InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0);
 
         messageStore = buildMessageStore();
+        //装载CommitLog, ConsumeQueue等重要数据
         boolean load = messageStore.load();
         assertTrue(load);
+        //启动服务
         messageStore.start();
     }
 
@@ -94,11 +95,15 @@ public class DefaultMessageStoreTest {
 
     public MessageStore buildMessageStore() throws Exception {
         MessageStoreConfig messageStoreConfig = new MessageStoreConfig();
+        //设置CommitLog使用的MappedFile尺寸为10MB
         messageStoreConfig.setMapedFileSizeCommitLog(1024 * 1024 * 10);
+        //设置ConsumeQueue使用的MappedFile尺寸为10MB
         messageStoreConfig.setMapedFileSizeConsumeQueue(1024 * 1024 * 10);
+        //indexService相关,消息索引服务相关的代码可以先放一下,先看存储主流程
         messageStoreConfig.setMaxHashSlotNum(10000);
         messageStoreConfig.setMaxIndexNum(100 * 100);
         messageStoreConfig.setFlushDiskType(FlushDiskType.SYNC_FLUSH);
+        //启动一个MessageStore实例, 其中构造函数中使用的参数也可以暂时忽略, 以后再看.
         return new DefaultMessageStore(messageStoreConfig, new BrokerStatsManager("simpleTest"), new MyMessageArrivingListener(), new BrokerConfig());
     }
 
@@ -108,6 +113,7 @@ public class DefaultMessageStoreTest {
         QUEUE_TOTAL = 1;
         MessageBody = StoreMessage.getBytes();
         for (long i = 0; i < totalMsgs; i++) {
+            //存储消息
             messageStore.putMessage(buildMessage());
         }
 
@@ -190,7 +196,7 @@ public class DefaultMessageStoreTest {
     private class MyMessageArrivingListener implements MessageArrivingListener {
         @Override
         public void arriving(String topic, int queueId, long logicOffset, long tagsCode, long msgStoreTime,
-                             byte[] filterBitMap, Map<String, String> properties) {
+            byte[] filterBitMap, Map<String, String> properties) {
         }
     }
 }

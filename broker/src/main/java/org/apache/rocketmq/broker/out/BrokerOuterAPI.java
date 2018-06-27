@@ -18,6 +18,7 @@ package org.apache.rocketmq.broker.out;
 
 import java.io.UnsupportedEncodingException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import org.apache.rocketmq.client.exception.MQBrokerException;
 import org.apache.rocketmq.common.MixAll;
@@ -88,11 +89,8 @@ public class BrokerOuterAPI {
     }
 
     public void updateNameServerAddressList(final String addrs) {
-        List<String> lst = new ArrayList<String>();
         String[] addrArray = addrs.split(";");
-        for (String addr : addrArray) {
-            lst.add(addr);
-        }
+        List<String> lst = new ArrayList<String>(Arrays.asList(addrArray));
 
         this.remotingClient.updateNameServerAddressList(lst);
     }

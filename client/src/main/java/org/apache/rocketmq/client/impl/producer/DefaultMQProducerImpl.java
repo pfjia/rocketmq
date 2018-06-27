@@ -139,18 +139,24 @@ public class DefaultMQProducerImpl implements MQProducerInner {
     }
 
     public void start(final boolean startFactory) throws MQClientException {
+        //判断producer当前的状态, 初始化完成后是CREATE_JUST状态
         switch (this.serviceState) {
+            //初始化完成
             case CREATE_JUST:
                 this.serviceState = ServiceState.START_FAILED;
 
+                //校验producerGroupName是否合法, 同一个进程内, producerGroupName必须是唯一的.
                 this.checkConfig();
 
+                //用进程id作为producerGroup的默认值
                 if (!this.defaultMQProducer.getProducerGroup().equals(MixAll.CLIENT_INNER_PRODUCER_GROUP)) {
                     this.defaultMQProducer.changeInstanceNameToPID();
                 }
 
+                //mQClientFactory主要负责与name serve和broker的通信,
                 this.mQClientFactory = MQClientManager.getInstance().getAndCreateMQClientInstance(this.defaultMQProducer, rpcHook);
 
+                //将producerGroup, producer注册到本地的producerTable表中, 一个producerGroup对应一个producer
                 boolean registerOK = mQClientFactory.registerProducer(this.defaultMQProducer.getProducerGroup(), this);
                 if (!registerOK) {
                     this.serviceState = ServiceState.CREATE_JUST;
@@ -159,14 +165,17 @@ public class DefaultMQProducerImpl implements MQProducerInner {
                         null);
                 }
 
+                //在topicPublishInfoTable表中, 放入一个默认的topic和它的路由信息
                 this.topicPublishInfoTable.put(this.defaultMQProducer.getCreateTopicKey(), new TopicPublishInfo());
 
                 if (startFactory) {
+                    //启动mQClientFactory
                     mQClientFactory.start();
                 }
 
                 log.info("the producer [{}] start OK. sendMessageWithVIPChannel={}", this.defaultMQProducer.getProducerGroup(),
                     this.defaultMQProducer.isSendMessageWithVIPChannel());
+                //serviceState状态变更为RUNNING
                 this.serviceState = ServiceState.RUNNING;
                 break;
             case RUNNING:
@@ -180,6 +189,7 @@ public class DefaultMQProducerImpl implements MQProducerInner {
                 break;
         }
 
+        //发送心跳给所有的broker
         this.mQClientFactory.sendHeartbeatToAllBrokerWithLock();
     }
 

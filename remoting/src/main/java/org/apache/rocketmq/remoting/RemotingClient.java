@@ -27,6 +27,11 @@ import org.apache.rocketmq.remoting.protocol.RemotingCommand;
 
 public interface RemotingClient extends RemotingService {
 
+    /**
+     * 修改namesrv地址列表
+     *
+     * @param addrs namesrv地址列表
+     */
     void updateNameServerAddressList(final List<String> addrs);
 
     List<String> getNameServerAddressList();

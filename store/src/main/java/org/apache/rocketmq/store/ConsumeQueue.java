@@ -41,6 +41,9 @@ public class ConsumeQueue {
     private final DefaultMessageStore defaultMessageStore;
 
     private final MappedFileQueue mappedFileQueue;
+    /**
+     * topic+queueId唯一标识ConsumeQueue
+     */
     private final String topic;
     private final int queueId;
     private final ByteBuffer byteBufferIndex;
@@ -425,6 +428,15 @@ public class ConsumeQueue {
         this.defaultMessageStore.getRunningFlags().makeLogicsQueueError();
     }
 
+    /**
+     * 消息位置的存储
+     *
+     * @param offset 消息在commitLog中的起始位置
+     * @param size 消息长度
+     * @param tagsCode 消息tag的hash code
+     * @param cqOffset 该消息在topic对应的queue中的下标
+     * @return
+     */
     private boolean putMessagePositionInfo(final long offset, final int size, final long tagsCode,
         final long cqOffset) {
 
@@ -490,6 +502,12 @@ public class ConsumeQueue {
         }
     }
 
+    /**
+     * 先根据startIndex找到对应的MappedFile, 再在该MappedFile中找到对应的字节映射
+     *
+     * @param startIndex 起始偏移量索引.
+     * @return
+     */
     public SelectMappedBufferResult getIndexBuffer(final long startIndex) {
         int mappedFileSize = this.mappedFileSize;
         long offset = startIndex * CQ_STORE_UNIT_SIZE;

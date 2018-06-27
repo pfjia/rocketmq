@@ -35,15 +35,30 @@ public class MappedFileQueue {
 
     private static final int DELETE_FILES_BATCH_MAX = 10;
 
+    /**
+     * 文件队列的存储路径
+     */
     private final String storePath;
 
+    /**
+     * 每个MappedFile的大小
+     */
     private final int mappedFileSize;
 
+    /**
+     * 存储MappedFile的map
+     */
     private final CopyOnWriteArrayList<MappedFile> mappedFiles = new CopyOnWriteArrayList<MappedFile>();
 
     private final AllocateMappedFileService allocateMappedFileService;
 
+    /**
+     * 已经刷到磁盘的位置
+     */
     private long flushedWhere = 0;
+    /**
+     * 已经提交的位置
+     */
     private long committedWhere = 0;
 
     private volatile long storeTimestamp = 0;
@@ -191,25 +206,38 @@ public class MappedFileQueue {
         return 0;
     }
 
+    /**
+     * 当文件写满或者找不到文件时, 才会创建新的文件
+     *
+     * @param startOffset
+     * @param needCreate
+     * @return
+     */
     public MappedFile getLastMappedFile(final long startOffset, boolean needCreate) {
         long createOffset = -1;
+        //获取当前Queue中最后一个MappedFile
         MappedFile mappedFileLast = getLastMappedFile();
 
+        //一个文件都不存在时, 计算起始文件的offset
         if (mappedFileLast == null) {
             createOffset = startOffset - (startOffset % this.mappedFileSize);
         }
 
+        //计算需要新创建的文件的offset
         if (mappedFileLast != null && mappedFileLast.isFull()) {
             createOffset = mappedFileLast.getFileFromOffset() + this.mappedFileSize;
         }
 
+        //创建新的MappedFile
         if (createOffset != -1 && needCreate) {
+            //计算文件名
             String nextFilePath = this.storePath + File.separator + UtilAll.offset2FileName(createOffset);
             String nextNextFilePath = this.storePath + File.separator
                 + UtilAll.offset2FileName(createOffset + this.mappedFileSize);
             MappedFile mappedFile = null;
 
             if (this.allocateMappedFileService != null) {
+                //使用AllocateMappedFileService创建文件主要是更加安全一些, 会将一些并行的操作穿行化
                 mappedFile = this.allocateMappedFileService.putRequestAndReturnMappedFile(nextFilePath,
                     nextNextFilePath, this.mappedFileSize);
             } else {
@@ -220,6 +248,7 @@ public class MappedFileQueue {
                 }
             }
 
+            //将新创建的文件添加到队列中
             if (mappedFile != null) {
                 if (this.mappedFiles.isEmpty()) {
                     mappedFile.setFirstCreateInQueue(true);
@@ -237,6 +266,9 @@ public class MappedFileQueue {
         return getLastMappedFile(startOffset, true);
     }
 
+    /**
+     * @return 队列中最后一个MappedFile对象
+     */
     public MappedFile getLastMappedFile() {
         MappedFile mappedFileLast = null;
 
@@ -264,8 +296,9 @@ public class MappedFileQueue {
             long diff = lastOffset - offset;
 
             final int maxDiff = this.mappedFileSize * 2;
-            if (diff > maxDiff)
+            if (diff > maxDiff) {
                 return false;
+            }
         }
 
         ListIterator<MappedFile> iterator = this.mappedFiles.listIterator();
@@ -506,6 +539,12 @@ public class MappedFileQueue {
         return mappedFileFirst;
     }
 
+    /**
+     * 根据offset/filesize计算该offset所在那个文件中
+     *
+     * @param offset
+     * @return
+     */
     public MappedFile findMappedFileByOffset(final long offset) {
         return findMappedFileByOffset(offset, false);
     }

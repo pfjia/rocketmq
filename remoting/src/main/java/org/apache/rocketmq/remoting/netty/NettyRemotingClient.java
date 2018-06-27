@@ -360,6 +360,7 @@ public class NettyRemotingClient extends NettyRemotingAbstract implements Remoti
                 }
             }
 
+            //有更新就shuffle
             if (update) {
                 Collections.shuffle(addrs);
                 log.info("name server address updated. NEW : {} , OLD: {}", addrs, old);

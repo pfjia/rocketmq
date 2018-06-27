@@ -60,31 +60,67 @@ import org.slf4j.LoggerFactory;
 
 import static org.apache.rocketmq.store.config.BrokerRole.SLAVE;
 
+/**
+ * 存储特点:
+ * (1) 消息主体以及元数据都存储在**CommitLog**当中
+ * (2) Consume Queue(相当于kafka中的partition, 但又有不同)是一个逻辑队列, 存储了这个Queue在CommiLog中的起始offset,  log大小和MessageTag的hashCode.
+ * (3) 每次读取消息队列先读取consumerQueue,然后再通过consumerQueue去commitLog中拿到消息主体.
+ *
+ * 存储模块核心类,提供数据功能API
+ */
 public class DefaultMessageStore implements MessageStore {
     private static final Logger log = LoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
 
+    /**
+     * 存储相关配置，例如存储路径，CommitLog路径及大小
+     */
     private final MessageStoreConfig messageStoreConfig;
     // CommitLog
     private final CommitLog commitLog;
 
+    /**
+     * topic的消费队列表
+     * key:topic
+     * value:消费该topic的一组ConsumeQueue
+     */
     private final ConcurrentMap<String/* topic */, ConcurrentMap<Integer/* queueId */, ConsumeQueue>> consumeQueueTable;
 
+    /**
+     * CQ刷盘服务线程
+     */
     private final FlushConsumeQueueService flushConsumeQueueService;
 
+    /**
+     * 磁盘超过水位进行清理
+     */
     private final CleanCommitLogService cleanCommitLogService;
 
     private final CleanConsumeQueueService cleanConsumeQueueService;
 
+    /**
+     * 索引服务 - 用于创建索引文件集合，当用户想要查询某个topic下某个key的消息时，能够快速响应  主要用于查询消息用的，根据topic+key获取消息,
+     */
     private final IndexService indexService;
 
     private final AllocateMappedFileService allocateMappedFileService;
-
+    /**
+     * CommitLog异步构建ConsumerQueue和索引文件的服务,定时分拣到达的消息到其他消费队列里去
+     */
     private final ReputMessageService reputMessageService;
 
+    /**
+     * 主备同步服务
+     */
     private final HAService haService;
 
+    /**
+     * 延迟消息：先把消息投递到delay topic暂存，然后通过定时器把delay topic暂存的消息投递到真实的topic.
+     */
     private final ScheduleMessageService scheduleMessageService;
 
+    /**
+     * 存储统计服务
+     */
     private final StoreStatsService storeStatsService;
 
     private final TransientStorePool transientStorePool;
@@ -94,12 +130,21 @@ public class DefaultMessageStore implements MessageStore {
 
     private final ScheduledExecutorService scheduledExecutorService =
         Executors.newSingleThreadScheduledExecutor(new ThreadFactoryImpl("StoreScheduledThread"));
+    /**
+     * Broker统计服务
+     */
     private final BrokerStatsManager brokerStatsManager;
+    /**
+     * 消息到达监听器
+     */
     private final MessageArrivingListener messageArrivingListener;
     private final BrokerConfig brokerConfig;
 
     private volatile boolean shutdown = true;
 
+    /**
+     * 检查点
+     */
     private StoreCheckpoint storeCheckpoint;
 
     private AtomicLong printTimes = new AtomicLong(0);
@@ -165,7 +210,7 @@ public class DefaultMessageStore implements MessageStore {
     /**
      * @throws IOException
      */
-    public boolean load() {
+    @Override public boolean load() {
         boolean result = true;
 
         try {
@@ -286,7 +331,7 @@ public class DefaultMessageStore implements MessageStore {
         }
     }
 
-    public void destroy() {
+    @Override public void destroy() {
         this.destroyLogics();
         this.commitLog.destroy();
         this.indexService.destroy();
@@ -302,12 +347,13 @@ public class DefaultMessageStore implements MessageStore {
         }
     }
 
-    public PutMessageResult putMessage(MessageExtBrokerInner msg) {
+    @Override public PutMessageResult putMessage(MessageExtBrokerInner msg) {
         if (this.shutdown) {
             log.warn("message store has shutdown, so putMessage is forbidden");
             return new PutMessageResult(PutMessageStatus.SERVICE_NOT_AVAILABLE, null);
         }
 
+        //SLAVE不存放
         if (BrokerRole.SLAVE == this.messageStoreConfig.getBrokerRole()) {
             long value = this.printTimes.getAndIncrement();
             if ((value % 50000) == 0) {
@@ -317,6 +363,7 @@ public class DefaultMessageStore implements MessageStore {
             return new PutMessageResult(PutMessageStatus.SERVICE_NOT_AVAILABLE, null);
         }
 
+        //当前状态不可写入
         if (!this.runningFlags.isWriteable()) {
             long value = this.printTimes.getAndIncrement();
             if ((value % 50000) == 0) {
@@ -328,6 +375,7 @@ public class DefaultMessageStore implements MessageStore {
             this.printTimes.set(0);
         }
 
+        //topic长度超过Byte.MAX_VALUE
         if (msg.getTopic().length() > Byte.MAX_VALUE) {
             log.warn("putMessage message topic length too long " + msg.getTopic().length());
             return new PutMessageResult(PutMessageStatus.MESSAGE_ILLEGAL, null);
@@ -338,17 +386,20 @@ public class DefaultMessageStore implements MessageStore {
             return new PutMessageResult(PutMessageStatus.PROPERTIES_SIZE_EXCEEDED, null);
         }
 
+        //OS页缓存忙碌, 这是一个很有意思的方法, 感兴趣可以自己看一下实现
         if (this.isOSPageCacheBusy()) {
             return new PutMessageResult(PutMessageStatus.OS_PAGECACHE_BUSY, null);
         }
 
         long beginTime = this.getSystemClock().now();
+        //将消息放入commitLog
         PutMessageResult result = this.commitLog.putMessage(msg);
 
         long eclipseTime = this.getSystemClock().now() - beginTime;
         if (eclipseTime > 500) {
             log.warn("putMessage not in lock eclipse time(ms)={}, bodyLength={}", eclipseTime, msg.getBody().length);
         }
+        //统计服务
         this.storeStatsService.setPutMessageEntireTimeMax(eclipseTime);
 
         if (null == result || !result.isOk()) {
@@ -358,7 +409,7 @@ public class DefaultMessageStore implements MessageStore {
         return result;
     }
 
-    public PutMessageResult putMessages(MessageExtBatch messageExtBatch) {
+    @Override public PutMessageResult putMessages(MessageExtBatch messageExtBatch) {
         if (this.shutdown) {
             log.warn("DefaultMessageStore has shutdown, so putMessages is forbidden");
             return new PutMessageResult(PutMessageStatus.SERVICE_NOT_AVAILABLE, null);
@@ -436,6 +487,7 @@ public class DefaultMessageStore implements MessageStore {
         return commitLog;
     }
 
+    @Override
     public GetMessageResult getMessage(final String group, final String topic, final int queueId, final long offset,
         final int maxMsgNums,
         final MessageFilter messageFilter) {
@@ -603,7 +655,7 @@ public class DefaultMessageStore implements MessageStore {
         return getResult;
     }
 
-    public long getMaxOffsetInQueue(String topic, int queueId) {
+    @Override public long getMaxOffsetInQueue(String topic, int queueId) {
         ConsumeQueue logic = this.findConsumeQueue(topic, queueId);
         if (logic != null) {
             long offset = logic.getMaxOffsetInQueue();
@@ -613,7 +665,7 @@ public class DefaultMessageStore implements MessageStore {
         return 0;
     }
 
-    public long getMinOffsetInQueue(String topic, int queueId) {
+    @Override public long getMinOffsetInQueue(String topic, int queueId) {
         ConsumeQueue logic = this.findConsumeQueue(topic, queueId);
         if (logic != null) {
             return logic.getMinOffsetInQueue();
@@ -640,7 +692,7 @@ public class DefaultMessageStore implements MessageStore {
         return 0;
     }
 
-    public long getOffsetInQueueByTime(String topic, int queueId, long timestamp) {
+    @Override public long getOffsetInQueueByTime(String topic, int queueId, long timestamp) {
         ConsumeQueue logic = this.findConsumeQueue(topic, queueId);
         if (logic != null) {
             return logic.getOffsetInQueueByTime(timestamp);
@@ -649,7 +701,7 @@ public class DefaultMessageStore implements MessageStore {
         return 0;
     }
 
-    public MessageExt lookMessageByOffset(long commitLogOffset) {
+    @Override public MessageExt lookMessageByOffset(long commitLogOffset) {
         SelectMappedBufferResult sbr = this.commitLog.getMessage(commitLogOffset, 4);
         if (null != sbr) {
             try {
