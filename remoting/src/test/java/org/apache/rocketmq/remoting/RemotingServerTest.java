@@ -26,12 +26,7 @@ import org.apache.rocketmq.remoting.exception.RemotingConnectException;
 import org.apache.rocketmq.remoting.exception.RemotingSendRequestException;
 import org.apache.rocketmq.remoting.exception.RemotingTimeoutException;
 import org.apache.rocketmq.remoting.exception.RemotingTooMuchRequestException;
-import org.apache.rocketmq.remoting.netty.NettyClientConfig;
-import org.apache.rocketmq.remoting.netty.NettyRemotingClient;
-import org.apache.rocketmq.remoting.netty.NettyRemotingServer;
-import org.apache.rocketmq.remoting.netty.NettyRequestProcessor;
-import org.apache.rocketmq.remoting.netty.NettyServerConfig;
-import org.apache.rocketmq.remoting.netty.ResponseFuture;
+import org.apache.rocketmq.remoting.netty.*;
 import org.apache.rocketmq.remoting.protocol.LanguageCode;
 import org.apache.rocketmq.remoting.protocol.RemotingCommand;
 import org.junit.AfterClass;
@@ -39,7 +34,6 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 public class RemotingServerTest {
@@ -48,10 +42,8 @@ public class RemotingServerTest {
 
     public static RemotingServer createRemotingServer() throws InterruptedException {
         NettyServerConfig config = new NettyServerConfig();
-        //初始化RemotingServer, 此处的逻辑与RemotingClient大体相当
         RemotingServer remotingServer = new NettyRemotingServer(config);
-        //注册一个处理器,根据requestCode, 获取处理器,处理请求
-        remotingServer.registerProcessor(0, new NettyRequestProcessor() {
+        remotingServer.registerProcessor(0, new AsyncNettyRequestProcessor() {
             @Override
             public RemotingCommand processRequest(ChannelHandlerContext ctx, RemotingCommand request) {
                 request.setRemark("Hi " + ctx.channel().remoteAddress());
@@ -94,15 +86,12 @@ public class RemotingServerTest {
     @Test
     public void testInvokeSync() throws InterruptedException, RemotingConnectException,
         RemotingSendRequestException, RemotingTimeoutException {
-        //消息头
         RequestHeader requestHeader = new RequestHeader();
         requestHeader.setCount(1);
         requestHeader.setMessageTitle("Welcome");
-        //构建请求
         RemotingCommand request = RemotingCommand.createRequestCommand(0, requestHeader);
-        //发送同步消息
         RemotingCommand response = remotingClient.invokeSync("localhost:8888", request, 1000 * 3);
-        assertNotNull(response);
+        assertTrue(response != null);
         assertThat(response.getLanguage()).isEqualTo(LanguageCode.JAVA);
         assertThat(response.getExtFields()).hasSize(2);
 
@@ -128,7 +117,7 @@ public class RemotingServerTest {
             @Override
             public void operationComplete(ResponseFuture responseFuture) {
                 latch.countDown();
-                assertNotNull(responseFuture);
+                assertTrue(responseFuture != null);
                 assertThat(responseFuture.getResponseCommand().getLanguage()).isEqualTo(LanguageCode.JAVA);
                 assertThat(responseFuture.getResponseCommand().getExtFields()).hasSize(2);
             }

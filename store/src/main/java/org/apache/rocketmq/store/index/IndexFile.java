@@ -23,9 +23,9 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.util.List;
 import org.apache.rocketmq.common.constant.LoggerName;
+import org.apache.rocketmq.logging.InternalLogger;
+import org.apache.rocketmq.logging.InternalLoggerFactory;
 import org.apache.rocketmq.store.MappedFile;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * 索引文件存储的消息的索引 - 方便根据topic+消息的key快速查询消息。
@@ -33,7 +33,7 @@ import org.slf4j.LoggerFactory;
  * 索引可以理解为一个类似hashtable的结构。建立索引时候根据每条消息的topic + "#" + key的hash值取模计算出实际文件位置absSlotPos，将消息在CommitLog的位移位置存储到slotPos对应的slot里面
  */
 public class IndexFile {
-    private static final Logger log = LoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
+    private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
     private static int hashSlotSize = 4;
     private static int indexSize = 20;
     private static int invalidIndex = 0;
@@ -82,7 +82,7 @@ public class IndexFile {
             this.indexHeader.updateByteBuffer();
             this.mappedByteBuffer.force();
             this.mappedFile.release();
-            log.info("flush index file eclipse time(ms) " + (System.currentTimeMillis() - beginTime));
+            log.info("flush index file elapsed time(ms) " + (System.currentTimeMillis() - beginTime));
         }
     }
 
@@ -139,7 +139,9 @@ public class IndexFile {
                     this.indexHeader.setBeginTimestamp(storeTimestamp);
                 }
 
-                this.indexHeader.incHashSlotCount();
+                if (invalidIndex == slotValue) {
+                    this.indexHeader.incHashSlotCount();
+                }
                 this.indexHeader.incIndexCount();
                 this.indexHeader.setEndPhyOffset(phyOffset);
                 this.indexHeader.setEndTimestamp(storeTimestamp);

@@ -19,6 +19,8 @@ package org.apache.rocketmq.store;
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
+import java.net.Inet6Address;
+import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileLock;
@@ -29,6 +31,7 @@ import java.util.LinkedList;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executors;
@@ -47,80 +50,44 @@ import org.apache.rocketmq.common.message.MessageExt;
 import org.apache.rocketmq.common.message.MessageExtBatch;
 import org.apache.rocketmq.common.running.RunningStats;
 import org.apache.rocketmq.common.sysflag.MessageSysFlag;
+import org.apache.rocketmq.common.topic.TopicValidator;
+import org.apache.rocketmq.logging.InternalLogger;
+import org.apache.rocketmq.logging.InternalLoggerFactory;
 import org.apache.rocketmq.store.config.BrokerRole;
 import org.apache.rocketmq.store.config.MessageStoreConfig;
 import org.apache.rocketmq.store.config.StorePathConfigHelper;
+import org.apache.rocketmq.store.dledger.DLedgerCommitLog;
 import org.apache.rocketmq.store.ha.HAService;
 import org.apache.rocketmq.store.index.IndexService;
 import org.apache.rocketmq.store.index.QueryOffsetResult;
 import org.apache.rocketmq.store.schedule.ScheduleMessageService;
 import org.apache.rocketmq.store.stats.BrokerStatsManager;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
-import static org.apache.rocketmq.store.config.BrokerRole.SLAVE;
-
-/**
- * 存储特点:
- * (1) 消息主体以及元数据都存储在**CommitLog**当中
- * (2) Consume Queue(相当于kafka中的partition, 但又有不同)是一个逻辑队列, 存储了这个Queue在CommiLog中的起始offset,  log大小和MessageTag的hashCode.
- * (3) 每次读取消息队列先读取consumerQueue,然后再通过consumerQueue去commitLog中拿到消息主体.
- *
- * 存储模块核心类,提供数据功能API
- */
 public class DefaultMessageStore implements MessageStore {
-    private static final Logger log = LoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
+    private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
 
-    /**
-     * 存储相关配置，例如存储路径，CommitLog路径及大小
-     */
     private final MessageStoreConfig messageStoreConfig;
     // CommitLog
     private final CommitLog commitLog;
 
-    /**
-     * topic的消费队列表
-     * key:topic
-     * value:消费该topic的一组ConsumeQueue
-     */
     private final ConcurrentMap<String/* topic */, ConcurrentMap<Integer/* queueId */, ConsumeQueue>> consumeQueueTable;
 
-    /**
-     * CQ刷盘服务线程
-     */
     private final FlushConsumeQueueService flushConsumeQueueService;
 
-    /**
-     * 磁盘超过水位进行清理
-     */
     private final CleanCommitLogService cleanCommitLogService;
 
     private final CleanConsumeQueueService cleanConsumeQueueService;
 
-    /**
-     * 索引服务 - 用于创建索引文件集合，当用户想要查询某个topic下某个key的消息时，能够快速响应  主要用于查询消息用的，根据topic+key获取消息,
-     */
     private final IndexService indexService;
 
     private final AllocateMappedFileService allocateMappedFileService;
-    /**
-     * CommitLog异步构建ConsumerQueue和索引文件的服务,定时分拣到达的消息到其他消费队列里去
-     */
+
     private final ReputMessageService reputMessageService;
 
-    /**
-     * 主备同步服务
-     */
     private final HAService haService;
 
-    /**
-     * 延迟消息：先把消息投递到delay topic暂存，然后通过定时器把delay topic暂存的消息投递到真实的topic.
-     */
     private final ScheduleMessageService scheduleMessageService;
 
-    /**
-     * 存储统计服务
-     */
     private final StoreStatsService storeStatsService;
 
     private final TransientStorePool transientStorePool;
@@ -130,21 +97,12 @@ public class DefaultMessageStore implements MessageStore {
 
     private final ScheduledExecutorService scheduledExecutorService =
         Executors.newSingleThreadScheduledExecutor(new ThreadFactoryImpl("StoreScheduledThread"));
-    /**
-     * Broker统计服务
-     */
     private final BrokerStatsManager brokerStatsManager;
-    /**
-     * 消息到达监听器
-     */
     private final MessageArrivingListener messageArrivingListener;
     private final BrokerConfig brokerConfig;
 
     private volatile boolean shutdown = true;
 
-    /**
-     * 检查点
-     */
     private StoreCheckpoint storeCheckpoint;
 
     private AtomicLong printTimes = new AtomicLong(0);
@@ -157,6 +115,9 @@ public class DefaultMessageStore implements MessageStore {
 
     boolean shutDownNormal = false;
 
+    private final ScheduledExecutorService diskCheckScheduledExecutorService =
+            Executors.newSingleThreadScheduledExecutor(new ThreadFactoryImpl("DiskCheckScheduledThread"));
+
     public DefaultMessageStore(final MessageStoreConfig messageStoreConfig, final BrokerStatsManager brokerStatsManager,
         final MessageArrivingListener messageArrivingListener, final BrokerConfig brokerConfig) throws IOException {
         this.messageArrivingListener = messageArrivingListener;
@@ -164,7 +125,11 @@ public class DefaultMessageStore implements MessageStore {
         this.messageStoreConfig = messageStoreConfig;
         this.brokerStatsManager = brokerStatsManager;
         this.allocateMappedFileService = new AllocateMappedFileService(this);
-        this.commitLog = new CommitLog(this);
+        if (messageStoreConfig.isEnableDLegerCommitLog()) {
+            this.commitLog = new DLedgerCommitLog(this);
+        } else {
+            this.commitLog = new CommitLog(this);
+        }
         this.consumeQueueTable = new ConcurrentHashMap<>(32);
 
         this.flushConsumeQueueService = new FlushConsumeQueueService();
@@ -172,8 +137,11 @@ public class DefaultMessageStore implements MessageStore {
         this.cleanConsumeQueueService = new CleanConsumeQueueService();
         this.storeStatsService = new StoreStatsService();
         this.indexService = new IndexService(this);
-        this.haService = new HAService(this);
-
+        if (!messageStoreConfig.isEnableDLegerCommitLog()) {
+            this.haService = new HAService(this);
+        } else {
+            this.haService = null;
+        }
         this.reputMessageService = new ReputMessageService();
 
         this.scheduleMessageService = new ScheduleMessageService(this);
@@ -210,7 +178,7 @@ public class DefaultMessageStore implements MessageStore {
     /**
      * @throws IOException
      */
-    @Override public boolean load() {
+    public boolean load() {
         boolean result = true;
 
         try {
@@ -252,7 +220,7 @@ public class DefaultMessageStore implements MessageStore {
     /**
      * @throws Exception
      */
-    @Override public void start() throws Exception {
+    public void start() throws Exception {
 
         lock = lockFile.getChannel().tryLock(0, 1, false);
         if (lock == null || lock.isShared() || !lock.isValid()) {
@@ -261,23 +229,63 @@ public class DefaultMessageStore implements MessageStore {
 
         lockFile.getChannel().write(ByteBuffer.wrap("lock".getBytes()));
         lockFile.getChannel().force(true);
+        {
+            /**
+             * 1. Make sure the fast-forward messages to be truncated during the recovering according to the max physical offset of the commitlog;
+             * 2. DLedger committedPos may be missing, so the maxPhysicalPosInLogicQueue maybe bigger that maxOffset returned by DLedgerCommitLog, just let it go;
+             * 3. Calculate the reput offset according to the consume queue;
+             * 4. Make sure the fall-behind messages to be dispatched before starting the commitlog, especially when the broker role are automatically changed.
+             */
+            long maxPhysicalPosInLogicQueue = commitLog.getMinOffset();
+            for (ConcurrentMap<Integer, ConsumeQueue> maps : this.consumeQueueTable.values()) {
+                for (ConsumeQueue logic : maps.values()) {
+                    if (logic.getMaxPhysicOffset() > maxPhysicalPosInLogicQueue) {
+                        maxPhysicalPosInLogicQueue = logic.getMaxPhysicOffset();
+                    }
+                }
+            }
+            if (maxPhysicalPosInLogicQueue < 0) {
+                maxPhysicalPosInLogicQueue = 0;
+            }
+            if (maxPhysicalPosInLogicQueue < this.commitLog.getMinOffset()) {
+                maxPhysicalPosInLogicQueue = this.commitLog.getMinOffset();
+                /**
+                 * This happens in following conditions:
+                 * 1. If someone removes all the consumequeue files or the disk get damaged.
+                 * 2. Launch a new broker, and copy the commitlog from other brokers.
+                 *
+                 * All the conditions has the same in common that the maxPhysicalPosInLogicQueue should be 0.
+                 * If the maxPhysicalPosInLogicQueue is gt 0, there maybe something wrong.
+                 */
+                log.warn("[TooSmallCqOffset] maxPhysicalPosInLogicQueue={} clMinOffset={}", maxPhysicalPosInLogicQueue, this.commitLog.getMinOffset());
+            }
+            log.info("[SetReputOffset] maxPhysicalPosInLogicQueue={} clMinOffset={} clMaxOffset={} clConfirmedOffset={}",
+                maxPhysicalPosInLogicQueue, this.commitLog.getMinOffset(), this.commitLog.getMaxOffset(), this.commitLog.getConfirmOffset());
+            this.reputMessageService.setReputFromOffset(maxPhysicalPosInLogicQueue);
+            this.reputMessageService.start();
+
+            /**
+             *  1. Finish dispatching the messages fall behind, then to start other services.
+             *  2. DLedger committedPos may be missing, so here just require dispatchBehindBytes <= 0
+             */
+            while (true) {
+                if (dispatchBehindBytes() <= 0) {
+                    break;
+                }
+                Thread.sleep(1000);
+                log.info("Try to finish doing reput the messages fall behind during the starting, reputOffset={} maxOffset={} behind={}", this.reputMessageService.getReputFromOffset(), this.getMaxPhyOffset(), this.dispatchBehindBytes());
+            }
+            this.recoverTopicQueueTable();
+        }
+
+        if (!messageStoreConfig.isEnableDLegerCommitLog()) {
+            this.haService.start();
+            this.handleScheduleMessageService(messageStoreConfig.getBrokerRole());
+        }
 
         this.flushConsumeQueueService.start();
         this.commitLog.start();
         this.storeStatsService.start();
-
-        if (this.scheduleMessageService != null && SLAVE != messageStoreConfig.getBrokerRole()) {
-            this.scheduleMessageService.start();
-        }
-
-        if (this.getMessageStoreConfig().isDuplicationEnable()) {
-            this.reputMessageService.setReputFromOffset(this.commitLog.getConfirmOffset());
-        } else {
-            this.reputMessageService.setReputFromOffset(this.commitLog.getMaxOffset());
-        }
-        this.reputMessageService.start();
-
-        this.haService.start();
 
         this.createTempFile();
         this.addScheduleTask();
@@ -289,10 +297,10 @@ public class DefaultMessageStore implements MessageStore {
             this.shutdown = true;
 
             this.scheduledExecutorService.shutdown();
-
+            this.diskCheckScheduledExecutorService.shutdown();
             try {
 
-                Thread.sleep(1000 * 3);
+                Thread.sleep(1000);
             } catch (InterruptedException e) {
                 log.error("shutdown Exception, ", e);
             }
@@ -300,8 +308,9 @@ public class DefaultMessageStore implements MessageStore {
             if (this.scheduleMessageService != null) {
                 this.scheduleMessageService.shutdown();
             }
-
-            this.haService.shutdown();
+            if (this.haService != null) {
+                this.haService.shutdown();
+            }
 
             this.storeStatsService.shutdown();
             this.indexService.shutdown();
@@ -331,7 +340,7 @@ public class DefaultMessageStore implements MessageStore {
         }
     }
 
-    @Override public void destroy() {
+    public void destroy() {
         this.destroyLogics();
         this.commitLog.destroy();
         this.indexService.destroy();
@@ -347,60 +356,143 @@ public class DefaultMessageStore implements MessageStore {
         }
     }
 
-    @Override public PutMessageResult putMessage(MessageExtBrokerInner msg) {
-        if (this.shutdown) {
-            log.warn("message store has shutdown, so putMessage is forbidden");
-            return new PutMessageResult(PutMessageStatus.SERVICE_NOT_AVAILABLE, null);
-        }
-
-        //SLAVE不存放
-        if (BrokerRole.SLAVE == this.messageStoreConfig.getBrokerRole()) {
-            long value = this.printTimes.getAndIncrement();
-            if ((value % 50000) == 0) {
-                log.warn("message store is slave mode, so putMessage is forbidden ");
-            }
-
-            return new PutMessageResult(PutMessageStatus.SERVICE_NOT_AVAILABLE, null);
-        }
-
-        //当前状态不可写入
-        if (!this.runningFlags.isWriteable()) {
-            long value = this.printTimes.getAndIncrement();
-            if ((value % 50000) == 0) {
-                log.warn("message store is not writeable, so putMessage is forbidden " + this.runningFlags.getFlagBits());
-            }
-
-            return new PutMessageResult(PutMessageStatus.SERVICE_NOT_AVAILABLE, null);
-        } else {
-            this.printTimes.set(0);
-        }
-
-        //topic长度超过Byte.MAX_VALUE
+    private PutMessageStatus checkMessage(MessageExtBrokerInner msg) {
         if (msg.getTopic().length() > Byte.MAX_VALUE) {
             log.warn("putMessage message topic length too long " + msg.getTopic().length());
-            return new PutMessageResult(PutMessageStatus.MESSAGE_ILLEGAL, null);
+            return PutMessageStatus.MESSAGE_ILLEGAL;
         }
 
         if (msg.getPropertiesString() != null && msg.getPropertiesString().length() > Short.MAX_VALUE) {
             log.warn("putMessage message properties length too long " + msg.getPropertiesString().length());
-            return new PutMessageResult(PutMessageStatus.PROPERTIES_SIZE_EXCEEDED, null);
+            return PutMessageStatus.MESSAGE_ILLEGAL;
+        }
+        return PutMessageStatus.PUT_OK;
+    }
+
+    private PutMessageStatus checkMessages(MessageExtBatch messageExtBatch) {
+        if (messageExtBatch.getTopic().length() > Byte.MAX_VALUE) {
+            log.warn("putMessage message topic length too long " + messageExtBatch.getTopic().length());
+            return PutMessageStatus.MESSAGE_ILLEGAL;
         }
 
-        //OS页缓存忙碌, 这是一个很有意思的方法, 感兴趣可以自己看一下实现
+        if (messageExtBatch.getBody().length > messageStoreConfig.getMaxMessageSize()) {
+            log.warn("PutMessages body length too long " + messageExtBatch.getBody().length);
+            return PutMessageStatus.MESSAGE_ILLEGAL;
+        }
+
+        return PutMessageStatus.PUT_OK;
+    }
+
+    private PutMessageStatus checkStoreStatus() {
+        if (this.shutdown) {
+            log.warn("message store has shutdown, so putMessage is forbidden");
+            return PutMessageStatus.SERVICE_NOT_AVAILABLE;
+        }
+
+        if (BrokerRole.SLAVE == this.messageStoreConfig.getBrokerRole()) {
+            long value = this.printTimes.getAndIncrement();
+            if ((value % 50000) == 0) {
+                log.warn("message store has shutdown, so putMessage is forbidden");
+            }
+            return PutMessageStatus.SERVICE_NOT_AVAILABLE;
+        }
+
+        if (!this.runningFlags.isWriteable()) {
+            long value = this.printTimes.getAndIncrement();
+            if ((value % 50000) == 0) {
+                log.warn("message store has shutdown, so putMessage is forbidden");
+            }
+            return PutMessageStatus.SERVICE_NOT_AVAILABLE;
+        } else {
+            this.printTimes.set(0);
+        }
+
         if (this.isOSPageCacheBusy()) {
-            return new PutMessageResult(PutMessageStatus.OS_PAGECACHE_BUSY, null);
+            return PutMessageStatus.OS_PAGECACHE_BUSY;
+        }
+        return PutMessageStatus.PUT_OK;
+    }
+
+    @Override
+    public CompletableFuture<PutMessageResult> asyncPutMessage(MessageExtBrokerInner msg) {
+        PutMessageStatus checkStoreStatus = this.checkStoreStatus();
+        if (checkStoreStatus != PutMessageStatus.PUT_OK) {
+            return CompletableFuture.completedFuture(new PutMessageResult(checkStoreStatus, null));
+        }
+
+        PutMessageStatus msgCheckStatus = this.checkMessage(msg);
+        if (msgCheckStatus == PutMessageStatus.MESSAGE_ILLEGAL) {
+            return CompletableFuture.completedFuture(new PutMessageResult(msgCheckStatus, null));
         }
 
         long beginTime = this.getSystemClock().now();
-        //将消息放入commitLog
-        PutMessageResult result = this.commitLog.putMessage(msg);
+        CompletableFuture<PutMessageResult> putResultFuture = this.commitLog.asyncPutMessage(msg);
 
-        long eclipseTime = this.getSystemClock().now() - beginTime;
-        if (eclipseTime > 500) {
-            log.warn("putMessage not in lock eclipse time(ms)={}, bodyLength={}", eclipseTime, msg.getBody().length);
+        putResultFuture.thenAccept((result) -> {
+            long elapsedTime = this.getSystemClock().now() - beginTime;
+            if (elapsedTime > 500) {
+                log.warn("putMessage not in lock elapsed time(ms)={}, bodyLength={}", elapsedTime, msg.getBody().length);
+            }
+            this.storeStatsService.setPutMessageEntireTimeMax(elapsedTime);
+
+            if (null == result || !result.isOk()) {
+                this.storeStatsService.getPutMessageFailedTimes().incrementAndGet();
+            }
+        });
+
+        return putResultFuture;
+    }
+
+    public CompletableFuture<PutMessageResult> asyncPutMessages(MessageExtBatch messageExtBatch) {
+        PutMessageStatus checkStoreStatus = this.checkStoreStatus();
+        if (checkStoreStatus != PutMessageStatus.PUT_OK) {
+            return CompletableFuture.completedFuture(new PutMessageResult(checkStoreStatus, null));
         }
-        //统计服务
-        this.storeStatsService.setPutMessageEntireTimeMax(eclipseTime);
+
+        PutMessageStatus msgCheckStatus = this.checkMessages(messageExtBatch);
+        if (msgCheckStatus == PutMessageStatus.MESSAGE_ILLEGAL) {
+            return CompletableFuture.completedFuture(new PutMessageResult(msgCheckStatus, null));
+        }
+
+        long beginTime = this.getSystemClock().now();
+        CompletableFuture<PutMessageResult> resultFuture = this.commitLog.asyncPutMessages(messageExtBatch);
+
+        resultFuture.thenAccept((result) -> {
+            long elapsedTime = this.getSystemClock().now() - beginTime;
+            if (elapsedTime > 500) {
+                log.warn("not in lock elapsed time(ms)={}, bodyLength={}", elapsedTime, messageExtBatch.getBody().length);
+            }
+
+            this.storeStatsService.setPutMessageEntireTimeMax(elapsedTime);
+
+            if (null == result || !result.isOk()) {
+                this.storeStatsService.getPutMessageFailedTimes().incrementAndGet();
+            }
+        });
+
+        return resultFuture;
+    }
+
+    @Override
+    public PutMessageResult putMessage(MessageExtBrokerInner msg) {
+        PutMessageStatus checkStoreStatus = this.checkStoreStatus();
+        if (checkStoreStatus != PutMessageStatus.PUT_OK) {
+            return new PutMessageResult(checkStoreStatus, null);
+        }
+
+        PutMessageStatus msgCheckStatus = this.checkMessage(msg);
+        if (msgCheckStatus == PutMessageStatus.MESSAGE_ILLEGAL) {
+            return new PutMessageResult(msgCheckStatus, null);
+        }
+
+        long beginTime = this.getSystemClock().now();
+        PutMessageResult result = this.commitLog.putMessage(msg);
+        long elapsedTime = this.getSystemClock().now() - beginTime;
+        if (elapsedTime > 500) {
+            log.warn("not in lock elapsed time(ms)={}, bodyLength={}", elapsedTime, msg.getBody().length);
+        }
+
+        this.storeStatsService.setPutMessageEntireTimeMax(elapsedTime);
 
         if (null == result || !result.isOk()) {
             this.storeStatsService.getPutMessageFailedTimes().incrementAndGet();
@@ -409,54 +501,26 @@ public class DefaultMessageStore implements MessageStore {
         return result;
     }
 
-    @Override public PutMessageResult putMessages(MessageExtBatch messageExtBatch) {
-        if (this.shutdown) {
-            log.warn("DefaultMessageStore has shutdown, so putMessages is forbidden");
-            return new PutMessageResult(PutMessageStatus.SERVICE_NOT_AVAILABLE, null);
+    @Override
+    public PutMessageResult putMessages(MessageExtBatch messageExtBatch) {
+        PutMessageStatus checkStoreStatus = this.checkStoreStatus();
+        if (checkStoreStatus != PutMessageStatus.PUT_OK) {
+            return new PutMessageResult(checkStoreStatus, null);
         }
 
-        if (BrokerRole.SLAVE == this.messageStoreConfig.getBrokerRole()) {
-            long value = this.printTimes.getAndIncrement();
-            if ((value % 50000) == 0) {
-                log.warn("DefaultMessageStore is in slave mode, so putMessages is forbidden ");
-            }
-
-            return new PutMessageResult(PutMessageStatus.SERVICE_NOT_AVAILABLE, null);
-        }
-
-        if (!this.runningFlags.isWriteable()) {
-            long value = this.printTimes.getAndIncrement();
-            if ((value % 50000) == 0) {
-                log.warn("DefaultMessageStore is not writable, so putMessages is forbidden " + this.runningFlags.getFlagBits());
-            }
-
-            return new PutMessageResult(PutMessageStatus.SERVICE_NOT_AVAILABLE, null);
-        } else {
-            this.printTimes.set(0);
-        }
-
-        if (messageExtBatch.getTopic().length() > Byte.MAX_VALUE) {
-            log.warn("PutMessages topic length too long " + messageExtBatch.getTopic().length());
-            return new PutMessageResult(PutMessageStatus.MESSAGE_ILLEGAL, null);
-        }
-
-        if (messageExtBatch.getBody().length > messageStoreConfig.getMaxMessageSize()) {
-            log.warn("PutMessages body length too long " + messageExtBatch.getBody().length);
-            return new PutMessageResult(PutMessageStatus.MESSAGE_ILLEGAL, null);
-        }
-
-        if (this.isOSPageCacheBusy()) {
-            return new PutMessageResult(PutMessageStatus.OS_PAGECACHE_BUSY, null);
+        PutMessageStatus msgCheckStatus = this.checkMessages(messageExtBatch);
+        if (msgCheckStatus == PutMessageStatus.MESSAGE_ILLEGAL) {
+            return new PutMessageResult(msgCheckStatus, null);
         }
 
         long beginTime = this.getSystemClock().now();
         PutMessageResult result = this.commitLog.putMessages(messageExtBatch);
-
-        long eclipseTime = this.getSystemClock().now() - beginTime;
-        if (eclipseTime > 500) {
-            log.warn("not in lock eclipse time(ms)={}, bodyLength={}", eclipseTime, messageExtBatch.getBody().length);
+        long elapsedTime = this.getSystemClock().now() - beginTime;
+        if (elapsedTime > 500) {
+            log.warn("not in lock elapsed time(ms)={}, bodyLength={}", elapsedTime, messageExtBatch.getBody().length);
         }
-        this.storeStatsService.setPutMessageEntireTimeMax(eclipseTime);
+
+        this.storeStatsService.setPutMessageEntireTimeMax(elapsedTime);
 
         if (null == result || !result.isOk()) {
             this.storeStatsService.getPutMessageFailedTimes().incrementAndGet();
@@ -487,7 +551,6 @@ public class DefaultMessageStore implements MessageStore {
         return commitLog;
     }
 
-    @Override
     public GetMessageResult getMessage(final String group, final String topic, final int queueId, final long offset,
         final int maxMsgNums,
         final MessageFilter messageFilter) {
@@ -645,8 +708,8 @@ public class DefaultMessageStore implements MessageStore {
         } else {
             this.storeStatsService.getGetMessageTimesTotalMiss().incrementAndGet();
         }
-        long eclipseTime = this.getSystemClock().now() - beginTime;
-        this.storeStatsService.setGetMessageEntireTimeMax(eclipseTime);
+        long elapsedTime = this.getSystemClock().now() - beginTime;
+        this.storeStatsService.setGetMessageEntireTimeMax(elapsedTime);
 
         getResult.setStatus(status);
         getResult.setNextBeginOffset(nextBeginOffset);
@@ -655,7 +718,7 @@ public class DefaultMessageStore implements MessageStore {
         return getResult;
     }
 
-    @Override public long getMaxOffsetInQueue(String topic, int queueId) {
+    public long getMaxOffsetInQueue(String topic, int queueId) {
         ConsumeQueue logic = this.findConsumeQueue(topic, queueId);
         if (logic != null) {
             long offset = logic.getMaxOffsetInQueue();
@@ -665,7 +728,7 @@ public class DefaultMessageStore implements MessageStore {
         return 0;
     }
 
-    @Override public long getMinOffsetInQueue(String topic, int queueId) {
+    public long getMinOffsetInQueue(String topic, int queueId) {
         ConsumeQueue logic = this.findConsumeQueue(topic, queueId);
         if (logic != null) {
             return logic.getMinOffsetInQueue();
@@ -692,7 +755,7 @@ public class DefaultMessageStore implements MessageStore {
         return 0;
     }
 
-    @Override public long getOffsetInQueueByTime(String topic, int queueId, long timestamp) {
+    public long getOffsetInQueueByTime(String topic, int queueId, long timestamp) {
         ConsumeQueue logic = this.findConsumeQueue(topic, queueId);
         if (logic != null) {
             return logic.getOffsetInQueueByTime(timestamp);
@@ -701,7 +764,7 @@ public class DefaultMessageStore implements MessageStore {
         return 0;
     }
 
-    @Override public MessageExt lookMessageByOffset(long commitLogOffset) {
+    public MessageExt lookMessageByOffset(long commitLogOffset) {
         SelectMappedBufferResult sbr = this.commitLog.getMessage(commitLogOffset, 4);
         if (null != sbr) {
             try {
@@ -957,7 +1020,7 @@ public class DefaultMessageStore implements MessageStore {
             Entry<String, ConcurrentMap<Integer, ConsumeQueue>> next = it.next();
             String topic = next.getKey();
 
-            if (!topics.contains(topic) && !topic.equals(ScheduleMessageService.SCHEDULE_TOPIC)) {
+            if (!topics.contains(topic) && !topic.equals(TopicValidator.RMQ_SYS_SCHEDULE_TOPIC)) {
                 ConcurrentMap<Integer, ConsumeQueue> queueTable = next.getValue();
                 for (ConsumeQueue cq : queueTable.values()) {
                     cq.destroy();
@@ -969,6 +1032,10 @@ public class DefaultMessageStore implements MessageStore {
                     this.commitLog.removeQueueFromTopicQueueTable(cq.getTopic(), cq.getQueueId());
                 }
                 it.remove();
+
+                if (this.brokerConfig.isAutoDeleteUnusedStats()) {
+                    this.brokerStatsManager.onTopicDeleted(topic);
+                }
 
                 log.info("cleanUnusedTopic: {},topic destroyed", topic);
             }
@@ -984,7 +1051,7 @@ public class DefaultMessageStore implements MessageStore {
         while (it.hasNext()) {
             Entry<String, ConcurrentMap<Integer, ConsumeQueue>> next = it.next();
             String topic = next.getKey();
-            if (!topic.equals(ScheduleMessageService.SCHEDULE_TOPIC)) {
+            if (!topic.equals(TopicValidator.RMQ_SYS_SCHEDULE_TOPIC)) {
                 ConcurrentMap<Integer, ConsumeQueue> queueTable = next.getValue();
                 Iterator<Entry<Integer, ConsumeQueue>> itQT = queueTable.entrySet().iterator();
                 while (itQT.hasNext()) {
@@ -1045,7 +1112,9 @@ public class DefaultMessageStore implements MessageStore {
                         int i = 0;
                         for (; i < bufferConsumeQueue.getSize(); i += ConsumeQueue.CQ_STORE_UNIT_SIZE) {
                             long offsetPy = bufferConsumeQueue.getByteBuffer().getLong();
-                            final ByteBuffer msgIdMemory = ByteBuffer.allocate(MessageDecoder.MSG_ID_LENGTH);
+                            InetSocketAddress inetSocketAddress = (InetSocketAddress) storeHost;
+                            int msgIdLength = (inetSocketAddress.getAddress() instanceof Inet6Address) ? 16 + 4 + 8 : 4 + 4 + 8;
+                            final ByteBuffer msgIdMemory = ByteBuffer.allocate(msgIdLength);
                             String msgId =
                                 MessageDecoder.createMessageId(msgIdMemory, MessageExt.socketAddress2ByteBuffer(storeHost), offsetPy);
                             messageIds.put(msgId, nextOffset++);
@@ -1091,6 +1160,7 @@ public class DefaultMessageStore implements MessageStore {
         return false;
     }
 
+    @Override
     public long dispatchBehindBytes() {
         return this.reputMessageService.behind();
     }
@@ -1146,7 +1216,7 @@ public class DefaultMessageStore implements MessageStore {
                 topic,
                 queueId,
                 StorePathConfigHelper.getStorePathConsumeQueue(this.messageStoreConfig.getStorePathRootDir()),
-                this.getMessageStoreConfig().getMapedFileSizeConsumeQueue(),
+                this.getMessageStoreConfig().getMappedFileSizeConsumeQueue(),
                 this);
             ConsumeQueue oldLogic = map.putIfAbsent(queueId, newLogic);
             if (oldLogic != null) {
@@ -1263,6 +1333,11 @@ public class DefaultMessageStore implements MessageStore {
         // DefaultMessageStore.this.cleanExpiredConsumerQueue();
         // }
         // }, 1, 1, TimeUnit.HOURS);
+        this.diskCheckScheduledExecutorService.scheduleAtFixedRate(new Runnable() {
+            public void run() {
+                DefaultMessageStore.this.cleanCommitLogService.isSpaceFull();
+            }
+        }, 1000L, 10000L, TimeUnit.MILLISECONDS);
     }
 
     private void cleanFilesPeriodically() {
@@ -1311,7 +1386,7 @@ public class DefaultMessageStore implements MessageStore {
                             topic,
                             queueId,
                             StorePathConfigHelper.getStorePathConsumeQueue(this.messageStoreConfig.getStorePathRootDir()),
-                            this.getMessageStoreConfig().getMapedFileSizeConsumeQueue(),
+                            this.getMessageStoreConfig().getMappedFileSizeConsumeQueue(),
                             this);
                         this.putConsumeQueue(topic, queueId, logic);
                         if (!logic.load()) {
@@ -1328,12 +1403,12 @@ public class DefaultMessageStore implements MessageStore {
     }
 
     private void recover(final boolean lastExitOK) {
-        this.recoverConsumeQueue();
+        long maxPhyOffsetOfConsumeQueue = this.recoverConsumeQueue();
 
         if (lastExitOK) {
-            this.commitLog.recoverNormally();
+            this.commitLog.recoverNormally(maxPhyOffsetOfConsumeQueue);
         } else {
-            this.commitLog.recoverAbnormally();
+            this.commitLog.recoverAbnormally(maxPhyOffsetOfConsumeQueue);
         }
 
         this.recoverTopicQueueTable();
@@ -1358,15 +1433,21 @@ public class DefaultMessageStore implements MessageStore {
         }
     }
 
-    private void recoverConsumeQueue() {
+    private long recoverConsumeQueue() {
+        long maxPhysicOffset = -1;
         for (ConcurrentMap<Integer, ConsumeQueue> maps : this.consumeQueueTable.values()) {
             for (ConsumeQueue logic : maps.values()) {
                 logic.recover();
+                if (logic.getMaxPhysicOffset() > maxPhysicOffset) {
+                    maxPhysicOffset = logic.getMaxPhysicOffset();
+                }
             }
         }
+
+        return maxPhysicOffset;
     }
 
-    private void recoverTopicQueueTable() {
+    public void recoverTopicQueueTable() {
         HashMap<String/* topic-queueid */, Long/* offset */> table = new HashMap<String, Long>(1024);
         long minPhyOffset = this.commitLog.getMinOffset();
         for (ConcurrentMap<Integer, ConsumeQueue> maps : this.consumeQueueTable.values()) {
@@ -1423,12 +1504,25 @@ public class DefaultMessageStore implements MessageStore {
         cq.putMessagePositionInfoWrapper(dispatchRequest);
     }
 
+    @Override
     public BrokerStatsManager getBrokerStatsManager() {
         return brokerStatsManager;
     }
 
+    @Override
+    public void handleScheduleMessageService(final BrokerRole brokerRole) {
+        if (this.scheduleMessageService != null) {
+            if (brokerRole == BrokerRole.SLAVE) {
+                this.scheduleMessageService.shutdown();
+            } else {
+                this.scheduleMessageService.start();
+            }
+        }
+
+    }
+
     public int remainTransientStoreBufferNumbs() {
-        return this.transientStorePool.remainBufferNumbs();
+        return this.transientStorePool.availableBufferNums();
     }
 
     @Override
@@ -1642,6 +1736,30 @@ public class DefaultMessageStore implements MessageStore {
         public void setManualDeleteFileSeveralTimes(int manualDeleteFileSeveralTimes) {
             this.manualDeleteFileSeveralTimes = manualDeleteFileSeveralTimes;
         }
+        public boolean isSpaceFull() {
+            String storePathPhysic = DefaultMessageStore.this.getMessageStoreConfig().getStorePathCommitLog();
+            double physicRatio = UtilAll.getDiskPartitionSpaceUsedPercent(storePathPhysic);
+            double ratio = DefaultMessageStore.this.getMessageStoreConfig().getDiskMaxUsedSpaceRatio() / 100.0;
+            if (physicRatio > ratio) {
+                DefaultMessageStore.log.info("physic disk of commitLog used: " + physicRatio);
+            }
+            if (physicRatio > this.diskSpaceWarningLevelRatio) {
+                boolean diskok = DefaultMessageStore.this.runningFlags.getAndMakeDiskFull();
+                if (diskok) {
+                    DefaultMessageStore.log.error("physic disk of commitLog maybe full soon, used " + physicRatio + ", so mark disk full");
+                }
+
+                return true;
+            } else {
+                boolean diskok = DefaultMessageStore.this.runningFlags.getAndMakeDiskOK();
+
+                if (!diskok) {
+                    DefaultMessageStore.log.info("physic disk space of commitLog OK " + physicRatio + ", so mark disk ok");
+                }
+
+                return false;
+            }
+        }
     }
 
     class CleanConsumeQueueService {
@@ -1755,9 +1873,6 @@ public class DefaultMessageStore implements MessageStore {
         }
     }
 
-    /**
-     * ConsumeQueue和IndexFile什么时候建立的呢？ – 在Broker启动的时候，会启动一个ReputMessageService线程服务:
-     */
     class ReputMessageService extends ServiceThread {
 
         private volatile long reputFromOffset = 0;
@@ -1796,6 +1911,11 @@ public class DefaultMessageStore implements MessageStore {
         }
 
         private void doReput() {
+            if (this.reputFromOffset < DefaultMessageStore.this.commitLog.getMinOffset()) {
+                log.warn("The reputFromOffset={} is smaller than minPyOffset={}, this usually indicate that the dispatch behind too much and the commitlog has expired.",
+                    this.reputFromOffset, DefaultMessageStore.this.commitLog.getMinOffset());
+                this.reputFromOffset = DefaultMessageStore.this.commitLog.getMinOffset();
+            }
             for (boolean doNext = true; this.isCommitLogAvailable() && doNext; ) {
 
                 if (DefaultMessageStore.this.getMessageStoreConfig().isDuplicationEnable()
@@ -1811,7 +1931,7 @@ public class DefaultMessageStore implements MessageStore {
                         for (int readSize = 0; readSize < result.getSize() && doNext; ) {
                             DispatchRequest dispatchRequest =
                                 DefaultMessageStore.this.commitLog.checkMessageAndReturnSize(result.getByteBuffer(), false, false);
-                            int size = dispatchRequest.getMsgSize();
+                            int size = dispatchRequest.getBufferSize() == -1 ? dispatchRequest.getMsgSize() : dispatchRequest.getBufferSize();
 
                             if (dispatchRequest.isSuccess()) {
                                 if (size > 0) {
@@ -1845,10 +1965,12 @@ public class DefaultMessageStore implements MessageStore {
                                     this.reputFromOffset += size;
                                 } else {
                                     doNext = false;
-                                    if (DefaultMessageStore.this.brokerConfig.getBrokerId() == MixAll.MASTER_ID) {
-                                        log.error("[BUG]the master dispatch message to consume queue error, COMMITLOG OFFSET: {}",
+                                    // If user open the dledger pattern or the broker is master node,
+                                    // it will not ignore the exception and fix the reputFromOffset variable
+                                    if (DefaultMessageStore.this.getMessageStoreConfig().isEnableDLegerCommitLog() ||
+                                        DefaultMessageStore.this.brokerConfig.getBrokerId() == MixAll.MASTER_ID) {
+                                        log.error("[BUG]dispatch message to consume queue error, COMMITLOG OFFSET: {}",
                                             this.reputFromOffset);
-
                                         this.reputFromOffset += result.getSize() - readSize;
                                     }
                                 }
