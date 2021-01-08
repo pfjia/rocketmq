@@ -1,0 +1,24 @@
+@startuml
+
+
+[->DefaultMQProducer:new
+[->DefaultMQProducer:start
+    DefaultMQProducer->DefaultMQProducerImpl:start
+        DefaultMQProducerImpl->MQClientManager:getOrCreateMQClientInstance
+        DefaultMQProducerImpl->MQClientInstance:registerProducer
+        DefaultMQProducerImpl->topicPublishInfoTable:put
+        DefaultMQProducerImpl->MQClientInstance:start
+            MQClientInstance->MQClientAPIImpl:fetchNameServerAddr
+            note right:若未指定 namesrv，则获取 namesrv
+            MQClientInstance->MQClientAPIImpl:start
+            note right:初始化远程通信渠道
+            MQClientInstance->MQClientInstance:startScheduledTask
+            note right:开启定时任务
+            MQClientInstance->PullMessageService:start
+            MQClientInstance->RebalanceService:start
+            MQClientInstance->DefaultMQProducerImpl:start
+            MQClientInstance->PullMessageService:start
+
+
+    DefaultMQProducer->TraceDispatcher:start
+@enduml

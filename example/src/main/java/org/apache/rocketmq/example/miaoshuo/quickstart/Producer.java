@@ -14,7 +14,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.rocketmq.example.quickstart;
+package org.apache.rocketmq.example.miaoshuo.quickstart;
 
 import java.util.concurrent.TimeUnit;
 
@@ -28,6 +28,8 @@ import org.apache.rocketmq.remoting.common.RemotingHelper;
  * This class demonstrates how to send messages to brokers using provided {@link DefaultMQProducer}.
  */
 public class Producer {
+
+
     public static void main(String[] args) throws MQClientException, InterruptedException {
 
         /*
@@ -63,12 +65,13 @@ public class Producer {
                     ("Hello RocketMQ " + i).getBytes(RemotingHelper.DEFAULT_CHARSET) /* Message body */
                 );
 
+                msg.setDelayTimeLevel(3);
                 /*
                  * Call send message to deliver message to one of brokers.
                  */
                 SendResult sendResult = producer.send(msg);
 
-                System.out.printf("%s%n", sendResult);
+                System.out.printf("%s%n", sendResult.getSendStatus());
             } catch (Exception e) {
                 e.printStackTrace();
                 Thread.sleep(1000);
